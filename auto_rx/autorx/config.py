@@ -837,8 +837,7 @@ def read_auto_rx_config(filename, no_sdr_test=False):
                 }
 
             logging.critical("Config - KA9Q SDR Support not implemented yet - exiting.")
-            return None
-        
+
         else:
             logging.critical(f"Config - Unknown SDR Type {auto_rx_config['sdr_type']} - exiting.")
             return None

@@ -10,6 +10,8 @@ import os.path
 import platform
 import subprocess
 import numpy as np
+from datetime import datetime
+import numpy.fft as fft
 
 from .utils import rtlsdr_test, reset_rtlsdr_by_serial, reset_all_rtlsdrs
 
@@ -50,8 +52,8 @@ def test_sdr(
 
 
     elif sdr_type == "KA9Q":
-        # To be implemented
-        _ok = False
+        _ok = True
+        # TODO: add proper check
 
         if not _ok:
             logging.error(f"KA9Q Server {sdr_hostname}:{sdr_port} non-functional.")
@@ -249,9 +251,11 @@ def get_sdr_iq_cmd(
 
         return _cmd
 
+    if sdr_type == "KA9Q":
+        raise NotImplementedError(f"Not implemented for sdr_type={sdr_type}")
+
     else:
-        logging.critical(f"IQ Source - Unsupported SDR type {sdr_type}")
-        return "false |"
+        raise NotImplementedError(f"Not implemented for sdr_type={sdr_type}")
 
 
 
@@ -328,8 +332,7 @@ def get_sdr_fm_cmd(
         return _cmd
 
     else:
-        logging.critical(f"FM Demod Source - Unsupported SDR type {sdr_type}")
-        return "false |"
+        raise NotImplementedError(f"Not implemented for sdr_type={sdr_type}")
 
 
 def read_rtl_power_log(log_filename, sdr_name):
@@ -388,6 +391,21 @@ def read_rtl_power_log(log_filename, sdr_name):
     return (freq, power, freq_step)
 
 
+def ka9q_get_channel_info():
+    output = subprocess.check_output(
+        '/home/pinky/work/air/ka9q-radio/metadump -1 sdr1-ctl.local',
+        shell=True,
+    ).decode()
+    # Thu 20 Oct 2022 22:49:04.080492 CEST pinky-a:59660 STAT: (1) cmd tag 0 (2) commands 0 (3) Fri 21 Oct 2022 00:49:04.080382 CEST (16) out data src pinky-a:40023 (17) out data dst sdr1.local:5004 (18) out SSRC 1 666 298 019 (19) out TTL 1 (10) in samprate 2 400 000 Hz (22) out data pkts 30 497 405 (21) out metadata pkts 75 876 (69) output level -30,1 dB (24) calibration 0 (28) DC I offset 0 (68) gain 0,0 dB (33) RF 401 000 001,526 Hz (78) lock 1 (48) demod 0 (linear) (20) out samprate 2 400 000 Hz (49) out channels 2 (40) filt high 1,128e+06 Hz (39) filt low -1,128e+06 Hz (82) output bits/sample 8 (32) direct conv 1
+
+    freq = output.split(' (33) RF ')[1].split(' Hz ', maxsplit=1)[0].replace('\u202f', '')
+    sample_rate = output.split(' (20) out samprate ')[1].split(' Hz ', maxsplit=1)[0].replace('\u202f', '')
+    return {
+        'freq': int(float(freq.replace(',', '.'))),
+        'sample_rate': int(sample_rate),
+    }
+
+
 def get_power_spectrum(
     sdr_type: str,
     frequency_start: int = 400050000,
@@ -396,6 +414,7 @@ def get_power_spectrum(
     integration_time: int = 20,
     rtl_device_idx = "0",
     rtl_power_path = "rtl_power",
+    ka9q_iqrecord_path = "/home/pinky/work/air/ka9q-radio/iqrecord",
     ppm = 0,
     gain = None,
     bias = False,
@@ -602,10 +621,102 @@ def get_power_spectrum(
 
         return read_rtl_power_log(_log_filename, _sdr_name)
 
+    elif sdr_type == "KA9Q":
+        # Use iqrecord to obtain power spectral density data
+
+        _iq_filename = f"log_power_{rtl_device_idx}.iq"
+        _log_filename = f"log_power_{rtl_device_idx}.log"
+
+        # Add -k 30 option, to SIGKILL iqrecord 30 seconds after the regular timeout expires.
+        # Note that this only works with the GNU Coreutils version of Timeout, not the IBM version,
+        # which is provided with OSX (Darwin).
+        _platform = platform.system()
+        if "Darwin" in _platform:
+            _timeout_kill = ""
+        else:
+            _timeout_kill = "-k 30 "
+
+        _timeout_cmd = f"timeout {_timeout_kill}{integration_time+10}"
+
+        _iq_cmd = (
+            f"{_timeout_cmd} {ka9q_iqrecord_path} "
+            f"-S sdr1-ctl.local "
+            f"-d {integration_time} "
+            f"-o {_iq_filename} "
+            f"sdr1.local"
+        )
+        # TODO: make this configurable
+
+        _sdr_name = get_sdr_name(
+            sdr_type=sdr_type,
+            rtl_device_idx=rtl_device_idx,
+            sdr_hostname=sdr_hostname,
+            sdr_port=sdr_port
+            )
+
+        logging.info(f"Scanner ({_sdr_name}) - Running frequency scan.")
+        logging.info(
+            f"Scanner ({_sdr_name}) - Running command: {_iq_cmd}"
+        )
+
+        try:
+            _output = subprocess.check_output(
+                _iq_cmd, shell=True, stderr=subprocess.STDOUT
+            )
+        except subprocess.CalledProcessError as e:
+            # Something went wrong...
+            logging.error(
+                f"Scanner ({_sdr_name}) - iqrecod call failed with return code {e.returncode}."
+            )
+            # Look at the error output in a bit more details.
+            _output = e.output.decode("utf-8")
+            # Something odd happened, dump the entire error output to the log for further analysis.
+            logging.critical(
+                f"Scanner ({_sdr_name}) - iqrecod reported error: {_output}"
+            )
+
+            return (None, None, None)
+
+        crop = 0.25
+        ci = ka9q_get_channel_info()
+        freq = ci['freq']
+        sample_rate = ci['sample_rate']
+        now = datetime.utcnow().strftime('%Y-%m-%d, %H:%M:%S')
+        # f"-f {frequency_start}:{frequency_stop}:{step} "
+        k = sample_rate // step
+        chunk_size = 1
+        while chunk_size < k:
+            chunk_size *= 2
+        data = np.fromfile(_iq_filename, dtype=np.int8)
+        data_c = data.astype(np.float32).view(np.complex64) / 127
+        power = np.zeros(chunk_size)
+        nchunks = len(data_c) // chunk_size
+        for n in range(0, nchunks):
+            idx = n * chunk_size
+            f = fft.fft(data_c[idx:idx+chunk_size])
+            power += np.real(np.conj(f) * f)
+        power = fft.fftshift(power)
+        l = int((len(power) - len(power) * (1-crop)) // 2)
+        power = power[l:-l]
+        power /= nchunks * chunk_size
+        p = 10 * np.log10(power)
+        freq_lo = int(freq - sample_rate // 2 * (1-crop))
+        freq_hi = int(freq + sample_rate // 2 * (1-crop))
+
+        np.savetxt(
+            _log_filename,
+            p,
+            fmt='%.2f',
+            newline=', ',
+            header='%s, %d, %d, %.2f, %d' % (now, freq_lo, freq_hi, sample_rate/chunk_size, nchunks,),
+            comments=''
+        )
+
+        return read_rtl_power_log(_log_filename, _sdr_name)
+
     else:
-        # Unsupported SDR Type
-        logging.critical(f"Get PSD - Unsupported SDR Type: {sdr_type}")
-        return (None, None, None)
+        raise NotImplementedError(f"Not implemented for sdr_type={sdr_type}")
+
 
 if __name__ == "__main__":
 
