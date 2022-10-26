@@ -5,7 +5,6 @@
 #   Copyright (C) 2018  Mark Jessop <vk5qi@rfhead.net>
 #   Released under GNU GPL v3 or later
 #
-import datetime
 import logging
 import numpy as np
 import os
@@ -13,6 +12,7 @@ import platform
 import subprocess
 import time
 import traceback
+from datetime import datetime
 from io import StringIO
 from threading import Thread, Lock
 from types import FunctionType, MethodType
@@ -925,7 +925,7 @@ class SondeScanner(object):
             (_freq_decimate, _power_decimate) = peak_decimation(freq / 1e6, power, 10)
             scan_result["freq"] = list(_freq_decimate)
             scan_result["power"] = list(_power_decimate)
-            scan_result["timestamp"] = datetime.datetime.utcnow().isoformat()
+            scan_result["timestamp"] = datetime.utcnow().isoformat()
             scan_result["peak_freq"] = []
             scan_result["peak_lvl"] = []
 
