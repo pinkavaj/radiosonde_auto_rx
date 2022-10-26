@@ -816,7 +816,6 @@ def read_auto_rx_config(filename, no_sdr_test=False):
                 }
 
         elif auto_rx_config["sdr_type"] == "KA9Q":
-            # Test access to the SpyServer
             _sdr_ok = test_sdr(
                 sdr_type=auto_rx_config["sdr_type"],
                 sdr_hostname=auto_rx_config["sdr_hostname"],

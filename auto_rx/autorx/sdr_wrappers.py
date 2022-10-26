@@ -173,7 +173,6 @@ def shutdown_sdr(
     if sdr_type == "KA9Q":
         # TODO - KA9Q Server channel cleanup.
         logging.debug(f"TODO - Cleanup for SDR type {sdr_type}")
-        pass
     else:
         logging.debug(f"No shutdown action required for SDR type {sdr_type}")
 
